@@ -36,4 +36,6 @@ docker ps
 
 ![](images/screenshot_airflow_docker.png)
 
+![](images/project_diagram.png)
+
 (images/project_diagram.png)
