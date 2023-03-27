@@ -1,1 +1,1 @@
-(images/project_diagram.png)
+![](images/project_diagram.png)
