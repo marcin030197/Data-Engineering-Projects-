@@ -1,0 +1,191 @@
+import airflow
+from datetime import timedelta
+from airflow import DAG
+from airflow.utils.dates import days_ago
+import pandas as pd
+from sqlalchemy import create_engine
+import datetime
+from airflow.operators.python_operator import PythonOperator
+from airflow.operators.postgres_operator import PostgresOperator
+from airflow.hooks.postgres_hook import PostgresHook
+from airflow.decorators import dag, task
+
+from src.validation import validation
+from src.etl import etl
+from src.ml_model import ml_model
+
+
+database='postgresql+psycopg2://airflow:airflow@postgres/airflow'
+
+args = {'start_date': days_ago(1)}
+
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': airflow.utils.dates.days_ago(2),
+    'email': ['airflow@example.com'],
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=1)
+}
+
+"""
+def validation():
+    try:
+        hook = PostgresHook(postgres_conn_id="postgres")
+        countries = hook.get_pandas_df('''
+                select 
+                    * 
+                from project.countries;
+            ''')
+    except:
+        raise Exception ('Error loading data from database')
+
+    if (countries['id']).is_unique:
+        pass
+    else:
+        raise Exception("Primary Key check is not unique")
+    
+    if countries.isnull().values.any():
+        raise Exception("Null values found")
+
+    column_4 = countries[countries.columns[4]].to_list()
+    for i,x in enumerate(column_4):
+        if column_4[i] <0 :
+            raise Exception ('values in "freedom_to_make_life_choices" less than 0')
+        if column_4[i] >1:
+            raise Exception ('values in "freedom_to_make_life_choices" greater than 1')
+        else: 
+            pass
+
+    column_5 = countries[countries.columns[5]].to_list()
+    for i,x in enumerate(column_5):
+        if column_5[i] <-1 :
+            raise Exception ('values in "Generosity" less than -1')
+        if column_5[i] >1:
+            raise Exception ('values in "Generosity" greater than 1')
+        else: 
+            pass
+"""
+
+"""
+def ETL():   
+    try:
+        hook = PostgresHook(postgres_conn_id="postgres")
+        countries = hook.get_pandas_df('''
+                select 
+                    * 
+                from project.countries
+                where year> 2010
+                ;
+            ''')
+    except:
+        raise Exception ('Error loading data from database')
+    
+    countries_agg=countries.groupby('country').agg({"id":"count"})
+    countries_agg=countries_agg.reset_index()
+    countries_agg=countries_agg.rename(columns={"id": "number_of_countries"})
+
+    max_numbers_of_years = max(countries_agg['number_of_countries'])
+    countries_agg=countries_agg[(countries_agg['number_of_countries']>=max_numbers_of_years)]
+
+    countries = pd.merge(countries,countries_agg,on='country',how='inner')
+    countries= countries.drop(columns=['number_of_countries'])
+
+    try:
+        conn = hook.get_conn()
+        cursor = conn.cursor()
+        cursor.execute('''
+                        drop table if exists project.f_countries;  
+                        CREATE TABLE IF NOT EXISTS project.f_countries(
+                                id integer,
+                                country varchar,
+                                "year" integer,
+                                healthy_life_expectancy_at_birth float,
+                                freedom_to_make_life_choices float,
+                                generosity float)
+                        '''
+                    )
+        cursor.close()
+        conn.commit()
+
+        engine = create_engine(database)
+        countries.to_sql('f_countries',engine,schema='project', if_exists='append', index = False)
+    except:
+        raise Exception ('Error loading data to database')
+    
+def ML_model():
+    import sklearn
+    from sklearn.model_selection import train_test_split
+    from sklearn.ensemble import RandomForestClassifier
+
+    try:
+        hook = PostgresHook(postgres_conn_id="postgres")
+        model = hook.get_pandas_df('''
+            select 
+                freedom_to_make_life_choices,
+                generosity,
+                project.life_expectancy_bench(c.healthy_life_expectancy_at_birth)
+		    from project.countries c ;
+            ''')
+    except:
+        raise Exception ('Error loading data from database')
+    
+    X=model.drop("life_expectancy_bench", axis=1)
+    y=model["life_expectancy_bench"].values.ravel()
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.33, random_state = 1)
+    rfc = RandomForestClassifier(random_state=0, max_depth=2, n_estimators=100)
+    rfc.fit(X_train, y_train)
+    results = model.loc[X_test.index].copy()
+    results['prediction'] = rfc.predict(X_test)
+
+    try:
+        conn = hook.get_conn()
+        cursor = conn.cursor()
+        cursor.execute('''
+                        drop table if exists project.countries_test_prediction;  
+                        CREATE TABLE IF NOT EXISTS project.countries_test_prediction(
+                                freedom_to_make_life_choices float,
+                                generosity float,
+                                life_expectancy_bench integer,
+                                prediction integer
+                                )
+                        '''
+                    )
+        cursor.close()
+        conn.commit()
+
+        engine = create_engine(database)
+        results.to_sql('countries_test_prediction',engine,schema='project', if_exists='append', index = False)
+    except:
+        raise Exception ('Error loading data to database')
+
+"""
+
+dag_countries = DAG(
+    dag_id='dag_countries',
+    default_args=args, 
+    schedule_interval=None
+    )
+
+with dag_countries:
+
+    op1= PythonOperator(
+        task_id='validation',
+        python_callable=validation,
+    )
+
+    op2= PythonOperator(
+        task_id='ETL',
+        python_callable=etl,
+    )
+
+    op3= PythonOperator(
+        task_id='ML_model',
+        python_callable=ml_model,
+    )
+
+
+    op1 >> [op2,op3]
+    
